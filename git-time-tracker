@@ -83,9 +83,31 @@ def _parse_time(time_str):
         minutes += int(time_alt_minutes_match.group(1))
     return minutes
 
+
+JIRA_STYLE_TIME_COMMAND_RE = re.compile('\s*([\w\d-]+):(\s+(\d+)h)?\s+(\d{2})m.*',
+                                        re.IGNORECASE)
+def _find_jira_style_time_commands(message):
+    """Try to find Jira style time commands in a commit message.
+
+    Jira style time commands have the form:
+    Foo-23: 1h 30m"""
+    commands= []
+    for line in message.split("\n"):
+        jira_style_time_command_match = JIRA_STYLE_TIME_COMMAND_RE.match(line)
+        if jira_style_time_command_match:
+            ticket = jira_style_time_command_match.group(1)
+            minutes = int(jira_style_time_command_match.group(4))
+            if jira_style_time_command_match.group(3):
+                hours = int(jira_style_time_command_match.group(3))
+            else:
+                hours = 0
+            commands.append((ticket, minutes + hours*60))
+    return commands
+
+
 TICKET_NUMBER_RE = re.compile('^(.+):')
 def _find_ticket_number(message):
-    """Trie to find a ticket number in a given commit message.
+    """Try to find a ticket number in a given commit message.
 
     Assume that the ticket number is a prefix to the commit message summary and
     suffixed by a colon."""
@@ -93,7 +115,7 @@ def _find_ticket_number(message):
     if ticket_number_match:
         return ticket_number_match.group(1)
     else:
-        None
+        return None
 
 def _generate_ticket_timestamp_time_tuples():
     """Generate (ticket number, timestamp, time) tuples for the current git
@@ -102,10 +124,16 @@ def _generate_ticket_timestamp_time_tuples():
     for commit in _traverse_commits(git_dir):
         message = commit.message.strip()
         timestamp = int(commit.commit_time) - (int(commit.commit_time % (60*60*24)))
-        for line in message.split("\n"):
-            time_str =  _find_time_command(line.strip())
-            if time_str:
-                yield (_find_ticket_number(message), timestamp, _parse_time(time_str))
+        jira_commands = _find_jira_style_time_commands(message)
+        for ticket, minutes in jira_commands:
+            yield(ticket, timestamp, minutes)
+        if not jira_commands:
+            for line in message.split("\n"):
+                time_str =  _find_time_command(line.strip())
+                if time_str:
+                    yield (_find_ticket_number(message),
+                           timestamp,
+                           _parse_time(time_str))
 
 
 def main():
