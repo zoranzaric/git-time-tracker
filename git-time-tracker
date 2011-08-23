@@ -1,0 +1,141 @@
+#!/usr/bin/env python
+# git-time-tracker -- show times tracked in commit messages
+# Author: Zoran Zaric <zz@zoranzaric.de>
+
+"""A script that parses git commit messages and evaluates time commands of the
+form `#time 2h 30m` and `#time 2:30`.  It sums up times and prints a summary for
+days and tickets.
+
+Requires dulwich, a git library implemented in python.
+
+
+Example commit message:
+
+------>3--->3--->3--->3--->3--->3--->3--->3--->3--->3--->3--->3------
+FOO-23: Fix some random stuff
+
+There was something broken, doing stuff I don't remember anymore solved the
+problem.
+#time 0:15
+------3<---3<---3<---3<---3<---3<---3<---3<---3<---3<---3<---3<------
+
+This commit message would result in 15 minutes beeing tracked for the ticket
+"FOO-23" for the day the commit was made."""
+
+from dulwich.repo import Repo
+import os
+import re
+import datetime
+
+def _possible_git_dirs():
+    """Generate possible git directories in the filesystem tree from the
+    current directory upwards."""
+    paths = os.path.abspath(os.curdir).split("/")
+    for i in range(len(paths), 0, -1):
+        git_dir = os.path.join("/".join(paths[:i]), '.git')
+        if git_dir == '.git':
+            yield '/.git'
+        else:
+            yield git_dir
+
+def _find_git_dir():
+    """Check possible git directories for a actual git directory."""
+    for dir in _possible_git_dirs():
+        if os.path.isdir(dir):
+            return dir
+    return None
+
+def _traverse_commits(git_dir):
+    """Traverse all commits from the current head of a given git directory."""
+    if git_dir:
+        repo = Repo(git_dir)
+        for commit in  repo.revision_history(repo.head()):
+            yield commit
+
+TIME_COMMAND_RE = re.compile('\#time .+$', re.MULTILINE)
+def _find_time_command(line):
+    """Find a time command in a given commit message line."""
+    match = TIME_COMMAND_RE.match(line)
+    if match:
+        return match.group(0)
+    else:
+        return None
+
+TIME_HM_RE = re.compile('(\d{1,2}):(\d{2})')
+TIME_ALT_HOURS_RE = re.compile('.*(\d+)h.*', re.IGNORECASE)
+TIME_ALT_MINUTES_RE = re.compile('.*(\d{2})m.*', re.IGNORECASE)
+def _parse_time(time_str):
+    """Parse the time from a given time command string."""
+    if time_str.startswith('#time '):
+        time_str = time_str[6:]
+
+    time_hm_match = TIME_HM_RE.match(time_str)
+    if time_hm_match:
+        return int(time_hm_match.group(1)) * 60 + int(time_hm_match.group(2))
+
+    minutes = 0
+    time_alt_hours_match = TIME_ALT_HOURS_RE.match(time_str)
+    if time_alt_hours_match:
+        minutes += int(time_alt_hours_match.group(1)) * 60
+
+    time_alt_minutes_match = TIME_ALT_MINUTES_RE.match(time_str)
+    if time_alt_minutes_match:
+        minutes += int(time_alt_minutes_match.group(1))
+    return minutes
+
+TICKET_NUMBER_RE = re.compile('^(.+):')
+def _find_ticket_number(message):
+    """Trie to find a ticket number in a given commit message.
+
+    Assume that the ticket number is a prefix to the commit message summary and
+    suffixed by a colon."""
+    ticket_number_match = TICKET_NUMBER_RE.match(message)
+    if ticket_number_match:
+        return ticket_number_match.group(1)
+    else:
+        None
+
+def _generate_ticket_timestamp_time_tuples():
+    """Generate (ticket number, timestamp, time) tuples for the current git
+    directory."""
+    git_dir = _find_git_dir()
+    for commit in _traverse_commits(git_dir):
+        message = commit.message.strip()
+        timestamp = int(commit.commit_time) - (int(commit.commit_time % (60*60*24)))
+        for line in message.split("\n"):
+            time_str =  _find_time_command(line.strip())
+            if time_str:
+                yield (_find_ticket_number(message), timestamp, _parse_time(time_str))
+
+
+def main():
+    """The main function that runs when this script is invoced on the
+    commandline."""
+    result = dict()
+    for ticket, timestamp, minutes in _generate_ticket_timestamp_time_tuples():
+        if timestamp not in result:
+            result[timestamp] = dict()
+            result[timestamp][ticket] = minutes
+        else:
+            if ticket not in result[timestamp]:
+                result[timestamp][ticket] = minutes
+            else:
+                result[timestamp][ticket] += minutes
+    for timestamp in sorted(result):
+        date = datetime.datetime.fromtimestamp(timestamp)
+        date_str = date.strftime("%d.%m.%Y")
+        print date_str
+        print "=" * len(date_str)
+        for ticket in result[timestamp]:
+            minutes = result[timestamp][ticket]
+            hours = minutes / 60
+            minutes = minutes % 60
+
+            if ticket == None:
+                ticket = "No Ticket"
+
+            print "%s: %d:%d\n" % (ticket, hours, minutes)
+
+if __name__ == '__main__':
+    main()
+
